@@ -62,3 +62,7 @@ htmlcov/
 
 docs/build
 site/
+
+# legacy planning docs (kept locally, see docs/DECISIONS.md)
+
+plans/
