@@ -57,6 +57,7 @@ class TestFitConfig:
         assert cfg.proposer.kl_reg is None
         assert cfg.proposer.fit_only is False
         assert cfg.proposer.make_worst_mix is False
+        assert cfg.proposer.expanded_kl_source_mixtures is None
 
         assert cfg.constraints.enabled is False
         assert cfg.constraints.target_tokens is None
@@ -110,6 +111,7 @@ class TestFitConfig:
             "priors": {
                 "relative_sizes": {"a": 0.5, "b": 0.5},
                 "token_counts": {"a": 1_000_000, "b": 1_000_000},
+                "expanded_relative_sizes": {"a:left": 0.2, "a:right": 0.3, "b": 0.5},
             },
             "eval": {
                 "type": "offline",
@@ -131,6 +133,7 @@ class TestFitConfig:
                 "kl_reg": 0.1,
                 "fit_only": False,
                 "make_worst_mix": False,
+                "expanded_kl_source_mixtures": {"a": {"a:left": 0.8, "a:right": 0.2}},
             },
             "constraints": {
                 "enabled": True,
@@ -150,6 +153,7 @@ class TestFitConfig:
         assert cfg.regression.seed == 42
         assert cfg.constraints.enabled is True
         assert cfg.constraints.target_tokens == 1_000_000_000
+        assert cfg.priors.expanded_relative_sizes["b"] == 0.5
 
 
 class TestPriorsConfig:
@@ -174,6 +178,7 @@ class TestPriorsConfig:
         counts["c"] = 0
         assert "c" not in priors.relative_sizes
         assert "c" not in priors.token_counts
+        assert priors.expanded_relative_sizes is None
 
 
 class TestSwarmDataConfig:
@@ -199,6 +204,78 @@ class TestProposerConfig:
         cfg = ProposerConfig()
         assert cfg.type == "exact"
         assert cfg.fit_only is False
+        assert cfg.expanded_kl_source_mixtures is None
+
+
+class TestExpandedKLConfig:
+    def test_accepts_valid_expanded_kl_config(self):
+        cfg = FitConfig(
+            swarm={"ratios": "r.csv", "metrics": "m.csv"},
+            priors={
+                "relative_sizes": {"existing": 0.7, "new": 0.3},
+                "token_counts": {"existing": 700_000, "new": 300_000},
+                "expanded_relative_sizes": {"existing:a": 0.2, "existing:b": 0.5, "new": 0.3},
+            },
+            proposer={
+                "type": "exact",
+                "expanded_kl_source_mixtures": {
+                    "existing": {"existing:a": 0.9, "existing:b": 0.1},
+                },
+            },
+            eval={"tasks": {"qa": ["metric1"]}},
+        )
+        assert cfg.priors.expanded_relative_sizes["new"] == 0.3
+
+    def test_rejects_partial_expanded_kl_config(self):
+        with pytest.raises(ValueError, match="must be provided together"):
+            FitConfig(
+                swarm={"ratios": "r.csv", "metrics": "m.csv"},
+                priors={
+                    "relative_sizes": {"existing": 0.7, "new": 0.3},
+                    "token_counts": {"existing": 700_000, "new": 300_000},
+                    "expanded_relative_sizes": {"existing:a": 0.2, "existing:b": 0.5, "new": 0.3},
+                },
+                eval={"tasks": {"qa": ["metric1"]}},
+            )
+
+    def test_rejects_non_normalized_source_mixture(self):
+        with pytest.raises(ValueError, match="must sum to 1.0"):
+            FitConfig(
+                swarm={"ratios": "r.csv", "metrics": "m.csv"},
+                priors={
+                    "relative_sizes": {"existing": 0.7, "new": 0.3},
+                    "token_counts": {"existing": 700_000, "new": 300_000},
+                    "expanded_relative_sizes": {"existing:a": 0.2, "existing:b": 0.5, "new": 0.3},
+                },
+                proposer={
+                    "expanded_kl_source_mixtures": {
+                        "existing": {"existing:a": 0.6, "existing:b": 0.1},
+                    }
+                },
+                eval={"tasks": {"qa": ["metric1"]}},
+            )
+
+    def test_rejects_uncovered_expanded_keys(self):
+        with pytest.raises(ValueError, match="unexpected keys"):
+            FitConfig(
+                swarm={"ratios": "r.csv", "metrics": "m.csv"},
+                priors={
+                    "relative_sizes": {"existing": 0.7, "new": 0.3},
+                    "token_counts": {"existing": 700_000, "new": 300_000},
+                    "expanded_relative_sizes": {
+                        "existing:a": 0.2,
+                        "existing:b": 0.5,
+                        "new": 0.2,
+                        "extra": 0.1,
+                    },
+                },
+                proposer={
+                    "expanded_kl_source_mixtures": {
+                        "existing": {"existing:a": 0.9, "existing:b": 0.1},
+                    }
+                },
+                eval={"tasks": {"qa": ["metric1"]}},
+            )
 
 
 class TestConstraintsConfig:

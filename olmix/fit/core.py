@@ -99,6 +99,8 @@ def run_fit(
     test_metrics_path: tuple[str, ...] = (),
     aggregate_task_families: bool = False,
     task_families: dict[str, list[str]] | None = None,
+    expanded_prior_distributions: dict[str, float] | None = None,
+    expanded_source_mixtures: dict[str, dict[str, float]] | None = None,
 ) -> None:
     """Run the regression fitting and mixture proposing pipeline.
 
@@ -405,6 +407,8 @@ def run_fit(
     weights = PROPOSER_TYPES[proposer_type]().propose(
         predictor=predictors,
         prior_distributions=priors[0],
+        expanded_prior_distributions=expanded_prior_distributions,
+        expanded_source_mixtures=expanded_source_mixtures,
         constrain_objective=constrain_objective,
         obj_weights=obj_weights_list,
         temperature=temperature,
@@ -416,7 +420,7 @@ def run_fit(
     )
     plot_and_log_weights(
         prior=priors[0],
-        original_prior=original_priors[0],
+        original_prior=expanded_prior_distributions if expanded_prior_distributions is not None else original_priors[0],
         prediction=weights,
         metric_name="opt_avg_all_metrics",
         regression_type=regression_type,
@@ -425,7 +429,12 @@ def run_fit(
         split_seed=seed,
         domain_cols=domain_cols,
         output_dir=output_dir,
-        expand_collapsed_weights_fn=expand_collapsed_weights,
+        expand_collapsed_weights_fn=lambda opt_weights, original_prior, collapsed_prior: expand_collapsed_weights(
+            opt_weights,
+            original_prior,
+            collapsed_prior,
+            source_mixtures=expanded_source_mixtures,
+        ),
     )
 
     metric = "opt_avg_all_metrics"

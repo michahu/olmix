@@ -110,4 +110,6 @@ def fit(config_path: str, output_dir_arg: str):
         test_metrics_path=(),
         aggregate_task_families=cfg.regression.aggregate_task_families,
         obj_weights=cfg.filtering.obj_weights,
+        expanded_prior_distributions=cfg.priors.expanded_relative_sizes,
+        expanded_source_mixtures=cfg.proposer.expanded_kl_source_mixtures,
     )

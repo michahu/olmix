@@ -536,12 +536,72 @@ class SearchProposer(Proposer):
         return best_weights
 
 
+def build_expansion_matrix(
+    collapsed_prior: dict[str, float],
+    expanded_prior: dict[str, float] | None = None,
+    source_mixtures: dict[str, dict[str, float]] | None = None,
+) -> tuple[np.ndarray, list[str]]:
+    """Build a collapsed-to-expanded linear map.
+
+    Returns:
+        A tuple of (matrix, expanded_keys) where matrix has shape
+        (n_expanded, n_collapsed) and maps collapsed weights to expanded weights.
+    """
+    collapsed_keys = list(collapsed_prior.keys())
+    if expanded_prior is None and source_mixtures is None:
+        return np.eye(len(collapsed_keys)), collapsed_keys
+    if expanded_prior is None or source_mixtures is None:
+        raise ValueError("expanded_prior and source_mixtures must be provided together")
+
+    expanded_keys = list(expanded_prior.keys())
+    matrix = np.zeros((len(expanded_keys), len(collapsed_keys)), dtype=float)
+    expanded_index = {key: idx for idx, key in enumerate(expanded_keys)}
+    covered_leaves: dict[str, str] = {}
+
+    for collapsed_idx, source in enumerate(collapsed_keys):
+        if source in source_mixtures:
+            mixture = source_mixtures[source]
+            total = sum(mixture.values())
+            if abs(total - 1.0) > 1e-6:
+                raise ValueError(f"Expanded source mixture for {source} must sum to 1.0, got {total}")
+            for leaf, weight in mixture.items():
+                if leaf not in expanded_index:
+                    raise ValueError(f"Expanded source mixture leaf {leaf} missing from expanded prior")
+                if leaf in covered_leaves:
+                    raise ValueError(
+                        f"Expanded prior leaf {leaf} is covered by both {covered_leaves[leaf]} and {source}"
+                    )
+                covered_leaves[leaf] = source
+                matrix[expanded_index[leaf], collapsed_idx] = weight
+        else:
+            if source not in expanded_index:
+                raise ValueError(f"Collapsed source {source} missing from expanded prior")
+            if source in covered_leaves:
+                raise ValueError(
+                    f"Expanded prior leaf {source} is covered by both {covered_leaves[source]} and {source}"
+                )
+            covered_leaves[source] = source
+            matrix[expanded_index[source], collapsed_idx] = 1.0
+
+    column_sums = matrix.sum(axis=0)
+    if not np.allclose(column_sums, 1.0):
+        raise ValueError(f"Expanded source mixtures must define a full partition of each collapsed source, got {column_sums}")
+
+    row_sums = matrix.sum(axis=1)
+    if not np.all(row_sums > 0):
+        uncovered = [key for key, row_sum in zip(expanded_keys, row_sums, strict=True) if row_sum == 0]
+        raise ValueError(f"Expanded prior contains leaves not covered by the collapsed source mapping: {uncovered}")
+    return matrix, expanded_keys
+
+
 class LogLinearExactProposer(Proposer):
     def propose(
         self,
         predictor: list[SearchRegressor],
         prior_distributions: dict,
         token_counts: dict[str, int],
+        expanded_prior_distributions: dict[str, float] | None = None,
+        expanded_source_mixtures: dict[str, dict[str, float]] | None = None,
         constrain_objective: bool = False,
         kl_reg: float | None = 0.05,
         obj_weights: list | None = None,
@@ -567,7 +627,18 @@ class LogLinearExactProposer(Proposer):
         x = cp.Variable(d)
 
         logger.info(f"Using prior distribution for KL: {prior_distributions}")
-        q = np.array(list(prior_distributions.values()))
+        logger.info(f"Using expanded prior distribution for KL: {expanded_prior_distributions}")
+        if expanded_prior_distributions is None:
+            expansion_matrix = np.eye(d, dtype=float)
+            q = np.array(list(prior_distributions.values()))
+        else:
+            expansion_matrix, expanded_keys = build_expansion_matrix(
+                prior_distributions,
+                expanded_prior=expanded_prior_distributions,
+                source_mixtures=expanded_source_mixtures,
+            )
+            q = np.array([expanded_prior_distributions[key] for key in expanded_keys])
+
         q = np.asarray(q, dtype=float)
         eps = 1e-12
         q = np.maximum(q, eps)  # ensure strictly positive
@@ -579,7 +650,8 @@ class LogLinearExactProposer(Proposer):
         loss = cp.sum(cp.multiply(weights, cp.exp(A @ x)))
 
         # KL(x || q) = sum x*log(x/q) = sum rel_entr(x, q)
-        kl = cp.sum(cp.rel_entr(x, q))
+        x_for_kl = expansion_matrix @ x
+        kl = cp.sum(cp.rel_entr(x_for_kl, q))
 
         obj = loss + kl_reg * kl
 
@@ -734,7 +806,18 @@ def expand_collapsed_weights(
     opt_weights: dict[str, float],
     original_prior: dict[str, float],
     collapsed_prior: dict[str, float],
+    source_mixtures: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, float]:
+    if source_mixtures is not None:
+        expanded = {}
+        for source, weight in opt_weights.items():
+            if source in source_mixtures:
+                for leaf, leaf_weight in source_mixtures[source].items():
+                    expanded[leaf] = leaf_weight * weight
+            else:
+                expanded[source] = weight
+        return expanded
+
     topics_to_expand = list(set(list(original_prior.keys())).difference(set(list(collapsed_prior.keys()))))
     collapsed_sources = sorted(list(set(list(collapsed_prior.keys())).difference(set(list(original_prior.keys())))))
 
